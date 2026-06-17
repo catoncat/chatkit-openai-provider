@@ -281,12 +281,42 @@ function attachToolKinds(decision: AssistantDecision, tools: PromptTool[]): void
     const tool = findPromptToolForCall(tools, call);
     if (tool) {
       call.kind = tool.type;
+      if (tool.type === "custom" && call.input === undefined) {
+        call.input = customToolArgumentsToInput(call.arguments);
+      }
     } else if (call.input !== undefined) {
       call.kind = "custom";
     } else {
       call.kind = "function";
     }
   }
+}
+
+function customToolArgumentsToInput(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (isRecord(value)) {
+    if (typeof value.input === "string") {
+      return value.input;
+    }
+    if (typeof value.code === "string") {
+      return value.code;
+    }
+    if (typeof value.command === "string") {
+      return value.command;
+    }
+    if (typeof value.cmd === "string") {
+      return value.cmd;
+    }
+  }
+
+  if (value === undefined) {
+    return "";
+  }
+
+  return JSON.stringify(value);
 }
 
 function findPromptToolForCall(tools: PromptTool[], call: ToolCallIntent): PromptTool | undefined {

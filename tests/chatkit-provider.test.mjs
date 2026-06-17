@@ -225,6 +225,45 @@ test("returns Responses API custom_tool_call items for Codex custom tools", asyn
   assert.equal(body.output[0].input, 'tools.exec_command({ cmd: "ls src" })');
 });
 
+test("normalizes custom tool arguments into custom tool input", async () => {
+  const { createChatKitProvider } = await loadProvider();
+  const provider = createChatKitProvider({
+    fetch: async () =>
+      new Response(
+        [
+          'data: {"type":"thread.item.updated","update":{"type":"assistant_message.content_part.text_delta","delta":"<tool_calls>[{\\"name\\":\\"exec\\",\\"arguments\\":{\\"cmd\\":\\"ls src\\"}}]</tool_calls>"}}',
+          ""
+        ].join("\n")
+      )
+  });
+
+  const response = await provider.fetch(
+    new Request("https://worker.test/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5-nano",
+        input: "List src files.",
+        tools: [
+          {
+            type: "custom",
+            name: "exec",
+            description: "Run JavaScript code.",
+            format: { type: "grammar", syntax: "lark", definition: "start: /[\\s\\S]+/" }
+          }
+        ]
+      })
+    }),
+    {}
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.output[0].type, "custom_tool_call");
+  assert.equal(body.output[0].name, "exec");
+  assert.equal(body.output[0].input, "ls src");
+});
+
 test("keeps prior completed turns when a later user turn calls a custom tool", async () => {
   const { createChatKitProvider } = await loadProvider();
   let upstreamPrompt = "";
