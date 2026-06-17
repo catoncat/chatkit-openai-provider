@@ -142,12 +142,23 @@ type ChatKitReadResult = {
   threadId?: string;
 };
 
+type ChatKitDecisionResult =
+  | {
+      ok: true;
+      decision: AssistantDecision;
+    }
+  | {
+      ok: false;
+      response: Response;
+    };
+
 const DEFAULT_CHATKIT_UPSTREAM_URL = "https://chatkit-studio-internal.onrender.com/chatkit";
 const DEFAULT_CHATKIT_ORIGIN = "https://chatkit.studio";
 const DEFAULT_MODEL = "gpt-5";
 const DEFAULT_MODELS = ["gpt-5", "gpt-5-nano", "gpt-5-reason", "gpt-5-pro"];
 const MAX_CHATKIT_TEXT_BYTES = 512 * 1024;
 const MAX_CHATKIT_SSE_RECORD_BYTES = 2 * 1024 * 1024;
+const MAX_PROTOCOL_REPAIR_PREVIEW_CHARS = 4000;
 
 export function createChatKitProvider(options: ProviderOptions = {}) {
   const upstreamFetch = options.fetch ?? fetch;
@@ -388,16 +399,9 @@ async function handleChatCompletions(
     return modelError;
   }
   const input = buildChatKitInput({ ...body, model });
-  const upstream = await callChatKit(input, env, upstreamFetch);
-
-  if (!upstream.ok) {
-    return upstreamError(upstream);
-  }
-
-  const read = await readChatKitAssistantText(upstream);
-  const resolved = resolveAssistantDecision(read.text, body.tools, body.tool_choice);
+  const resolved = await resolveDecisionFromChatKit(input, body.tools, body.tool_choice, env, upstreamFetch);
   if (!resolved.ok) {
-    return jsonError("adapter_protocol_error", resolved.message, 502);
+    return resolved.response;
   }
 
   const completion = chatCompletionFromDecision(resolved.decision, model);
@@ -420,16 +424,9 @@ async function handleResponses(
     return modelError;
   }
   const input = buildChatKitInput({ ...body, model });
-  const upstream = await callChatKit(input, env, upstreamFetch);
-
-  if (!upstream.ok) {
-    return upstreamError(upstream);
-  }
-
-  const read = await readChatKitAssistantText(upstream);
-  const resolved = resolveAssistantDecision(read.text, body.tools, body.tool_choice);
+  const resolved = await resolveDecisionFromChatKit(input, body.tools, body.tool_choice, env, upstreamFetch);
   if (!resolved.ok) {
-    return jsonError("adapter_protocol_error", resolved.message, 502);
+    return resolved.response;
   }
 
   const response = responsesApiFromDecision(resolved.decision, model);
@@ -439,6 +436,91 @@ async function handleResponses(
   }
 
   return json(response);
+}
+
+async function resolveDecisionFromChatKit(
+  input: ChatKitInput,
+  tools: ChatTool[] = [],
+  toolChoice: unknown,
+  env: ChatKitProviderBindings,
+  upstreamFetch: Fetcher
+): Promise<ChatKitDecisionResult> {
+  const upstream = await callChatKit(input, env, upstreamFetch);
+  if (!upstream.ok) {
+    return { ok: false, response: await upstreamError(upstream) };
+  }
+
+  const read = await readChatKitAssistantText(upstream);
+  let resolved = resolveAssistantDecision(read.text, tools, toolChoice);
+
+  if (!resolved.ok && shouldAttemptProtocolRepair(tools, toolChoice)) {
+    const repairInput = buildProtocolRepairInput(input, read.text, resolved.message, toolChoice);
+    const repairUpstream = await callChatKit(repairInput, env, upstreamFetch);
+    if (!repairUpstream.ok) {
+      return { ok: false, response: await upstreamError(repairUpstream) };
+    }
+
+    const repairRead = await readChatKitAssistantText(repairUpstream);
+    const repaired = resolveAssistantDecision(repairRead.text, tools, toolChoice);
+    if (repaired.ok) {
+      return { ok: true, decision: repaired.decision };
+    }
+
+    resolved = {
+      ok: false,
+      message: `${resolved.message} Protocol repair also failed: ${repaired.message}`
+    };
+  }
+
+  if (!resolved.ok) {
+    return { ok: false, response: jsonError("adapter_protocol_error", resolved.message, 502) };
+  }
+
+  return { ok: true, decision: resolved.decision };
+}
+
+function shouldAttemptProtocolRepair(tools: ChatTool[], toolChoice: unknown): boolean {
+  const normalizedTools = normalizeToolsForPrompt(tools);
+  const normalizedChoice = normalizeToolChoice(toolChoice);
+  return normalizedTools.length > 0 && normalizedChoice.type !== "none";
+}
+
+function buildProtocolRepairInput(
+  input: ChatKitInput,
+  invalidAssistantText: string,
+  errorMessage: string,
+  toolChoice: unknown
+): ChatKitInput {
+  const originalPrompt = input.content[0]?.text || "";
+  const normalizedChoice = normalizeToolChoice(toolChoice);
+  const invalidPreview = truncateForProtocolRepair(invalidAssistantText);
+  const repairPrompt = [
+    originalPrompt,
+    "",
+    "PROTOCOL_REPAIR_REQUEST",
+    "Your previous response violated the OpenAI-compatible adapter protocol.",
+    `Adapter error: ${errorMessage}`,
+    "Rewrite your previous response as exactly one valid terminal block.",
+    "Do not apologize. Do not explain the protocol. Do not output prose outside the terminal block.",
+    "If the previous response said you would inspect, edit, run, test, search, or continue work, emit a matching <tool_calls> block now.",
+    "Previous invalid assistant response, JSON-escaped and possibly truncated:",
+    JSON.stringify(invalidPreview),
+    finalOutputContract(normalizedChoice, toolChoice)
+  ].join("\n");
+
+  return {
+    ...input,
+    content: [{ type: "input_text", text: repairPrompt }]
+  };
+}
+
+function truncateForProtocolRepair(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= MAX_PROTOCOL_REPAIR_PREVIEW_CHARS) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, MAX_PROTOCOL_REPAIR_PREVIEW_CHARS)}\n...[truncated]`;
 }
 
 function buildPrompt(messages: ChatMessage[], tools: ChatTool[], toolChoice: unknown, instructions?: unknown): string {

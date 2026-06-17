@@ -499,16 +499,30 @@ test("stops reading ChatKit SSE after a complete terminal block", async () => {
   assert.ok(pullCount <= 2);
 });
 
-test("rejects untagged assistant text when tools are active", async () => {
+test("repairs untagged assistant text when tools are active", async () => {
   const { createChatKitProvider } = await loadProvider();
+  const upstreamPrompts = [];
   const provider = createChatKitProvider({
-    fetch: async () =>
-      new Response(
+    fetch: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      upstreamPrompts.push(body.params.input.content[0].text);
+
+      if (upstreamPrompts.length === 1) {
+        return new Response(
+          [
+            'data: {"type":"thread.item.updated","update":{"type":"assistant_message.content_part.text_delta","delta":"I will inspect the project next."}}',
+            ""
+          ].join("\n")
+        );
+      }
+
+      return new Response(
         [
-          'data: {"type":"thread.item.updated","update":{"type":"assistant_message.content_part.text_delta","delta":"I will inspect the project next."}}',
+          'data: {"type":"thread.item.updated","update":{"type":"assistant_message.content_part.text_delta","delta":"<tool_calls>[{\\"name\\":\\"exec_command\\",\\"arguments\\":{\\"cmd\\":\\"ls\\"}}]</tool_calls>"}}',
           ""
         ].join("\n")
-      )
+      );
+    }
   });
 
   const response = await provider.fetch(
@@ -531,8 +545,13 @@ test("rejects untagged assistant text when tools are active", async () => {
   );
   const body = await response.json();
 
-  assert.equal(response.status, 502);
-  assert.equal(body.error.code, "adapter_protocol_error");
+  assert.equal(response.status, 200);
+  assert.equal(upstreamPrompts.length, 2);
+  assert.match(upstreamPrompts[1], /PROTOCOL_REPAIR_REQUEST/);
+  assert.match(upstreamPrompts[1], /I will inspect the project next\./);
+  assert.equal(body.output[0].type, "function_call");
+  assert.equal(body.output[0].name, "exec_command");
+  assert.equal(body.output[0].arguments, '{"cmd":"ls"}');
 });
 
 test("requires bearer token when PROVIDER_API_KEY is configured", async () => {
