@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "chatkit-openai-provider",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "oai.chen.rs/*",
+      "zone_name": "chen.rs"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "CHATKIT_UPSTREAM_URL": "https://chatkit-studio-internal.onrender.com/chatkit",
+    "CHATKIT_ORIGIN": "https://chatkit.studio",
+    "CHATKIT_REFERER": "https://chatkit.studio/",
+    "DEFAULT_MODEL": "gpt-5",
+    "MODEL_LIST": "gpt-5,gpt-5-nano,gpt-5-reason,gpt-5-pro"
+  }
+}
