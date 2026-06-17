@@ -106,6 +106,42 @@ test("converts Codex custom tools into a tagged ChatKit prompt protocol", async 
   assert.match(text, /Inspect this repo\./);
 });
 
+test("repeats the tagged protocol and shell edit rules after the conversation", async () => {
+  const { buildChatKitInput } = await loadProvider();
+  const input = buildChatKitInput({
+    model: "gpt-5-nano",
+    input: [
+      { type: "message", role: "user", content: "Continue the existing project. Do not stop early." }
+    ],
+    tools: [
+      {
+        type: "function",
+        name: "exec_command",
+        description: "Run a shell command.",
+        parameters: {
+          type: "object",
+          properties: {
+            cmd: { type: "string" },
+            workdir: { type: "string" }
+          },
+          required: ["cmd"]
+        }
+      }
+    ]
+  });
+  const text = input.content[0].text;
+  const conversationIndex = text.indexOf("CONVERSATION");
+  const finalContractIndex = text.indexOf("FINAL_OUTPUT_CONTRACT");
+  const shellRulesIndex = text.indexOf("CODEX_SHELL_TOOL_RULES");
+
+  assert.ok(conversationIndex >= 0);
+  assert.ok(finalContractIndex > conversationIndex);
+  assert.ok(shellRulesIndex > conversationIndex);
+  assert.match(text.slice(finalContractIndex), /Plain prose outside these tags is a protocol error/);
+  assert.match(text.slice(shellRulesIndex), /Do not use echo to write multi-line source files/);
+  assert.match(text.slice(shellRulesIndex), /Confirm the target project directory before creating files/);
+});
+
 test("preserves Responses instructions and tool-result items in the ChatKit prompt", async () => {
   const { buildChatKitInput } = await loadProvider();
   const input = buildChatKitInput({

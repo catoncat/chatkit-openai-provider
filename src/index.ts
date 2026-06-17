@@ -478,7 +478,46 @@ function buildPrompt(messages: ChatMessage[], tools: ChatTool[], toolChoice: unk
     lines.push(formatMessage(message));
   }
 
+  if (promptTools.length > 0 && normalizedChoice.type !== "none") {
+    lines.push(finalOutputContract(normalizedChoice, toolChoice), codexShellToolRules(promptTools));
+  }
+
   return lines.join("\n");
+}
+
+function finalOutputContract(choice: NormalizedToolChoice, toolChoice: unknown): string {
+  return [
+    "FINAL_OUTPUT_CONTRACT",
+    "This is a machine protocol, not a normal chat response.",
+    "Plain prose outside these tags is a protocol error.",
+    "Return exactly one of these terminal blocks and then stop:",
+    "- <tool_calls>[{\"name\":\"tool_name\",\"arguments\":{}}]</tool_calls>",
+    "- <tool_calls>[{\"name\":\"tool_name\",\"input\":\"raw input\"}]</tool_calls>",
+    "- <final_answer>your final answer</final_answer>",
+    "If you need to inspect, edit, run, test, search, or continue work, emit <tool_calls>; do not describe the plan.",
+    toolChoiceInstruction(choice),
+    `tool_choice=${JSON.stringify(toolChoice ?? "auto")}`
+  ].join("\n");
+}
+
+function codexShellToolRules(tools: PromptTool[]): string {
+  const hasShellTool = tools.some((tool) =>
+    ["exec", "exec_command", "shell", "bash"].includes(tool.name)
+  );
+
+  if (!hasShellTool) {
+    return "";
+  }
+
+  return [
+    "CODEX_SHELL_TOOL_RULES",
+    "Confirm the target project directory before creating files or directories.",
+    "Use the tool workdir field or an explicit cd into the existing project root.",
+    "Do not create sibling src/, data/, types/, or utils/ directories from a parent workspace unless the user asked for a new project.",
+    "Do not use echo to write multi-line source files; quoting breaks easily.",
+    "Prefer apply_patch when available. If only shell is available, use cat <<'EOF' with a single-quoted delimiter, or a small script that writes exact file contents.",
+    "After editing, run a focused build, typecheck, or file readback before claiming success."
+  ].join("\n");
 }
 
 function formatToolsForPrompt(tools: PromptTool[]): string {
